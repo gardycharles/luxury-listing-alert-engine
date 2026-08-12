@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <base target="_top" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Luxury Listing Alert Engine</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <?!= include('Styles'); ?>
+</head>
+<body>
+
+  <!-- TOPBAR -->
+  <header class="topbar">
+    <div class="topbar__inner">
+      <div class="topbar__brand">
+        <div class="topbar__eyebrow">Real Estate Intelligence</div>
+        <h1 class="topbar__title">Luxury Listing Alert Engine</h1>
+      </div>
+      <div class="topbar__meta" id="topbar-meta">
+        <span id="topbar-system" class="pill"></span>
+        <span id="topbar-trigger" class="pill"></span>
+      </div>
+    </div>
+  </header>
+
+  <!-- TABS -->
+  <nav class="tabs" id="tabs">
+    <button class="tab is-active" data-tab="dashboard">Dashboard</button>
+    <button class="tab" data-tab="listings">Listings</button>
+    <button class="tab" data-tab="recipients">Recipients</button>
+    <button class="tab" data-tab="settings">Settings</button>
+    <button class="tab" data-tab="outreach">Outreach</button>
+    <button class="tab" data-tab="errors">Errors</button>
+  </nav>
+
+  <!-- TOAST -->
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <main class="main">
+
+    <!-- =================== DASHBOARD =================== -->
+    <section class="view is-active" id="view-dashboard">
+
+      <!-- Stats grid -->
+      <div class="stat-grid">
+        <div class="stat-card">
+          <div class="stat-card__label">System</div>
+          <div class="stat-card__value" id="stat-system">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card__label">Trigger</div>
+          <div class="stat-card__value" id="stat-trigger">—</div>
+        </div>
+        <div class="stat-card stat-card--accent">
+          <div class="stat-card__label">Total Listings</div>
+          <div class="stat-card__num" id="stat-total">—</div>
+        </div>
+        <div class="stat-card stat-card--accent">
+          <div class="stat-card__label">Alerts Sent</div>
+          <div class="stat-card__num" id="stat-alerts">—</div>
+        </div>
+        <div class="stat-card stat-card--accent">
+          <div class="stat-card__label">New Today</div>
+          <div class="stat-card__num" id="stat-today">—</div>
+        </div>
+        <div class="stat-card stat-card--accent">
+          <div class="stat-card__label">Active Recipients</div>
+          <div class="stat-card__num" id="stat-recipients">—</div>
+        </div>
+        <div class="stat-card stat-card--accent">
+          <div class="stat-card__label">Saved Searches</div>
+          <div class="stat-card__num" id="stat-searches">—</div>
+        </div>
+        <div class="stat-card stat-card--wide">
+          <div class="stat-card__label">Last Scan</div>
+          <div class="stat-card__small" id="stat-last-scan">—</div>
+        </div>
+      </div>
+
+      <!-- Scan CTA -->
+      <div class="card scan-card">
+        <div class="scan-card__body">
+          <div>
+            <div class="scan-card__title">Run a Manual Scan</div>
+            <div class="scan-card__sub">Fetch new $1M+ listings now and alert matching recipients instantly.</div>
+          </div>
+          <button class="btn btn--gold btn--lg" id="btn-run-scan">Run Scan Now</button>
+        </div>
+        <div class="scan-card__last" id="scan-last-result"></div>
+      </div>
+
+  
+    </section>
+
+    <!-- =================== LISTINGS =================== -->
+    <section class="view" id="view-listings">
+      <div class="card">
+        <div class="card__header">
+          <h3 class="card__title">Listings</h3>
+          <span class="count-badge" id="listings-count"></span>
+        </div>
+        <div class="filters">
+          <input class="input" id="f-listings-search" placeholder="Search address, area, broker…" />
+          <select class="input" id="f-listings-status">
+            <option value="">All outreach statuses</option>
+          </select>
+          <input class="input" id="f-listings-min-price" type="number" placeholder="Min price" />
+          <input class="input" id="f-listings-area" placeholder="Filter by area" />
+          <input class="input" id="f-listings-neighborhood" placeholder="Filter by neighborhood" />
+        </div>
+      </div>
+      <div class="listing-grid" id="listing-grid"></div>
+      <div class="empty-state" id="listing-empty" hidden>
+        <div class="empty-state__icon">🏙</div>
+        <div class="empty-state__title">No listings yet</div>
+        <div class="empty-state__sub">Run a scan to start detecting $1M+ listings.</div>
+      </div>
+    </section>
+
+    <!-- =================== RECIPIENTS =================== -->
+    <section class="view" id="view-recipients">
+      <div class="card">
+        <div class="card__header"><h3 class="card__title">Add Recipient</h3></div>
+        <div class="form-grid">
+          <input class="input" id="r-name"      placeholder="Full name" />
+          <input class="input" id="r-email"     placeholder="Email address" />
+          <input class="input" id="r-min-price" type="number" placeholder="Min price (optional)" />
+          <input class="input" id="r-area"      placeholder="Area filter (optional)" />
+          <input class="input" id="r-neighborhood" placeholder="Neighborhood filter (optional)" />
+          <label class="check"><input type="checkbox" id="r-active" checked /> Active</label>
+          <button class="btn btn--primary" id="btn-add-recipient">Add Recipient</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card__header">
+          <h3 class="card__title">Recipients</h3>
+          <span class="count-badge" id="recipients-count"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="recipients-table">
+            <thead><tr>
+              <th>Name</th><th>Email</th><th>Min Price</th>
+              <th>Area Filter</th><th>Neighborhood Filter</th>
+              <th>Active</th><th>Created</th><th></th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="empty-state" id="recipients-empty" hidden>
+          <div class="empty-state__icon">👤</div>
+          <div class="empty-state__title">No recipients yet</div>
+          <div class="empty-state__sub">Add someone above to receive listing alerts.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =================== SETTINGS =================== -->
+    <section class="view" id="view-settings">
+
+      <!-- Scan settings -->
+      <div class="card">
+        <div class="card__header"><h3 class="card__title">Scan Settings</h3></div>
+        <div class="form-grid">
+          <label class="field"><span>Min price</span>
+            <input class="input" id="s-min-price" type="number" min="0" /></label>
+          <label class="field"><span>Max price</span>
+            <input class="input" id="s-max-price" type="number" min="0" /></label>
+          <label class="field"><span>Rows per scan</span>
+            <input class="input" id="s-rows" type="number" min="1" max="100" /></label>
+          <label class="field"><span>Page</span>
+            <input class="input" id="s-page" type="number" min="1" /></label>
+          <label class="field field--wide"><span>Namespace</span>
+            <input class="input" id="s-namespace" placeholder="(PRIMARY_FEED OR PARTNER_FEED_A OR PARTNER_FEED_B)" /></label>
+          <label class="field field--wide">
+           <span>Area filter (optional)</span>
+          <input class="input" id="s-area" placeholder="e.g. Brooklyn" />
+           </label>
+
+<label class="field field--wide">
+  <span>Neighborhood filter (optional)</span>
+  <input class="input" id="s-neighborhood" placeholder="e.g. Park Slope, Brooklyn Heights" />
+</label>
+          <label class="field field--wide">
+            <span>Alert Delivery Timing</span>
+            <select class="input" id="s-email-mode" style="max-width:380px;"></select>
+            <small class="field__hint">Batch delivery can be enabled after queue support is added.</small>
+          </label>
+          <label class="check" style="grid-column:1/-1;">
+            <input type="checkbox" id="s-system-enabled" /> System enabled
+          </label>
+          <div style="grid-column:1/-1;">
+            <button class="btn btn--primary" id="btn-save-settings">Save Settings</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Saved Searches -->
+      <div class="card">
+        <div class="card__header">
+          <h3 class="card__title">Saved Searches</h3>
+          <span class="count-badge" id="searches-count"></span>
+        </div>
+        <div class="form-grid" style="margin-bottom:20px;">
+          <input class="input" id="ss-name"      placeholder="Search name (required)" />
+          <input class="input" id="ss-min-price" type="number" placeholder="Min price" />
+          <input class="input" id="ss-max-price" type="number" placeholder="Max price" />
+          <input class="input" id="ss-area"      placeholder="Area" />
+          <input class="input" id="ss-namespace" placeholder="Namespace (optional)" />
+          <label class="field">
+            <span>Alert timing</span>
+            <select class="input" id="ss-timing"></select>
+          </label>
+          <label class="check"><input type="checkbox" id="ss-active" checked /> Active</label>
+          <button class="btn btn--primary" id="btn-add-search">Save Search</button>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="searches-table">
+            <thead><tr>
+              <th>Name</th><th>Min</th><th>Max</th><th>Area</th>
+              <th>Namespace</th><th>Alert Timing</th><th>Active</th><th>Created</th><th></th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="empty-state" id="searches-empty" hidden>
+          <div class="empty-state__icon">🔍</div>
+          <div class="empty-state__title">No saved searches yet</div>
+          <div class="empty-state__sub">Save a search above to track specific criteria.</div>
+        </div>
+      </div>
+
+      <!-- Admin Actions -->
+      <div class="card">
+        <div class="card__header"><h3 class="card__title">System Administration</h3></div>
+        <div class="admin-grid">
+          <div class="admin-item">
+            <div class="admin-item__info">
+              <div class="admin-item__title">1-Minute Trigger</div>
+              <div class="admin-item__sub">Automatically scan every 60 seconds on Google's servers.</div>
+            </div>
+            <div class="admin-item__actions">
+              <span id="admin-trigger-pill" class="pill pill--neutral">—</span>
+              <button class="btn btn--primary" id="btn-install-trigger">Install Trigger</button>
+              <button class="btn btn--danger-ghost" id="btn-remove-trigger">Remove</button>
+            </div>
+          </div>
+          <div class="admin-item">
+            <div class="admin-item__info">
+              <div class="admin-item__title">System Toggle</div>
+              <div class="admin-item__sub">Pause all scanning without removing the trigger.</div>
+            </div>
+            <div class="admin-item__actions">
+              <button class="btn" id="btn-toggle-system">Toggle System On/Off</button>
+            </div>
+          </div>
+          <div class="admin-item">
+            <div class="admin-item__info">
+              <div class="admin-item__title">Sheet Repair</div>
+              <div class="admin-item__sub">Create missing tabs or fix header row mismatches.</div>
+            </div>
+            <div class="admin-item__actions">
+              <button class="btn" id="btn-setup-sheets">Setup / Repair Sheets</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =================== OUTREACH =================== -->
+    <section class="view" id="view-outreach">
+      <div class="card">
+        <div class="card__header">
+          <h3 class="card__title">Outreach Log</h3>
+          <span class="count-badge" id="outreach-count"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="outreach-table">
+            <thead><tr>
+              <th>Listing</th><th>Assigned To</th><th>Status</th>
+              <th>Marketing Angle</th><th>Follow-Up</th><th>Updated</th><th>Notes</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="empty-state" id="outreach-empty" hidden>
+          <div class="empty-state__icon">📋</div>
+          <div class="empty-state__title">No outreach activity yet</div>
+          <div class="empty-state__sub">Click "Update" on a listing card to log your outreach.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =================== ERRORS =================== -->
+<section class="view" id="view-errors">
+
+  <!-- Latest system log -->
+  <div class="card" id="last-error-card" hidden>
+    <div class="card__header">
+      <h3 class="card__title">Latest System Log</h3>
+    </div>
+    <div id="last-error-body" class="error-preview"></div>
+  </div>
+
+  <div class="card">
+    <div class="card__header">
+      <h3 class="card__title">Error Log</h3>
+      <span class="count-badge" id="errors-count"></span>
+    </div>
+
+    <div class="table-wrap">
+      <table class="table" id="errors-table">
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Function</th>
+            <th>Message</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="empty-state" id="errors-empty" hidden>
+      <div class="empty-state__icon">✅</div>
+      <div class="empty-state__title">No errors logged</div>
+      <div class="empty-state__sub">Everything's running cleanly.</div>
+    </div>
+  </div>
+
+ </section>
+
+  </main>
+
+  <!-- =================== OUTREACH MODAL =================== -->
+  <div id="modal" class="modal" hidden>
+    <div class="modal__panel">
+      <div class="modal__header">
+        <h3 class="modal__title">Update Listing</h3>
+        <button class="iconbtn" id="modal-close" aria-label="Close">×</button>
+      </div>
+      <div class="modal__body">
+        <input type="hidden" id="m-listing-id" />
+        <label class="field"><span>Assigned to</span>
+          <input class="input" id="m-assigned-to" placeholder="Person responsible" /></label>
+        <label class="field"><span>Outreach status</span>
+          <select class="input" id="m-outreach-status"></select></label>
+        <label class="field"><span>Marketing angle</span>
+          <input class="input" id="m-marketing-angle" placeholder="What's the pitch?" /></label>
+        <label class="field"><span>Marketing plan status</span>
+          <input class="input" id="m-plan-status" placeholder="Drafted / Sent / Accepted…" /></label>
+        <label class="field"><span>Follow-up date</span>
+          <input class="input" id="m-follow-up" type="date" /></label>
+        <label class="field"><span>Notes</span>
+          <textarea class="input" id="m-notes" rows="3"></textarea></label>
+      </div>
+      <div class="modal__footer">
+        <button class="btn" id="modal-cancel">Cancel</button>
+        <button class="btn btn--primary" id="modal-save">Save Changes</button>
+      </div>
+    </div>
+  </div>
+
+  <?!= include('Scripts'); ?>
+</body>
+</html>

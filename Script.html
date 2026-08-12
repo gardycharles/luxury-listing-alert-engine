@@ -1,0 +1,741 @@
+<script>
+(function () {
+  'use strict';
+
+  // =====================================================================
+  //   STATE
+  // =====================================================================
+  var state = {
+    settings: {}, listings: [], recipients: [], outreach: [],
+    savedSearches: [], errors: [], stats: {},
+    outreachStatuses: ['Not Started','Contacted','Pitch Created','Follow-Up Needed','Won','Lost'],
+    alertTimingOptions: [
+      { value:'instant',  label:'Instant alert for every new listing' },
+      { value:'batch_15', label:'Batch alerts every 15 minutes' },
+      { value:'batch_30', label:'Batch alerts every 30 minutes' },
+      { value:'hourly',   label:'Hourly digest' }
+    ],
+    filters: { search:'', status:'', minPrice:'', area:'', neighborhood:'' }
+  };
+
+  // =====================================================================
+  //   UTIL
+  // =====================================================================
+  function $(sel)    { return document.querySelector(sel); }
+  function $all(sel) { return Array.prototype.slice.call(document.querySelectorAll(sel)); }
+
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    if (attrs) Object.keys(attrs).forEach(function(k) {
+      if (k === 'class')      node.className = attrs[k];
+      else if (k === 'text')  node.textContent = attrs[k];
+      else if (k === 'html')  node.innerHTML = attrs[k];
+      else                    node.setAttribute(k, attrs[k]);
+    });
+    (children||[]).forEach(function(c) {
+      if (c == null) return;
+      node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+    });
+    return node;
+  }
+
+  function fmtPrice(n) {
+    var num = Number(n)||0;
+    if (!num) return '$—';
+    return '$' + Math.round(num).toString().replace(/\B(?=(\d{3})+(?!\d))/g,',');
+  }
+  function esc(s) { return String(s==null?'':s); }
+
+  var toastTimer;
+  function toast(msg, type) {
+    var t = $('#toast');
+    t.textContent = msg;
+    t.className = 'toast is-show' + (type ? ' toast--' + type : '');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function(){ t.className = 'toast'; }, 3800);
+  }
+
+  function setBusy(btn, busy, label) {
+    if (!btn) return;
+    if (busy) { btn._label = btn.textContent; btn.textContent = label||'Working…'; btn.disabled = true; }
+    else       { if (btn._label) btn.textContent = btn._label; btn.disabled = false; }
+  }
+
+  function call(fn, payload) {
+    return new Promise(function(resolve, reject) {
+      google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)[fn](payload);
+    });
+  }
+
+  /** Most recent Outreach_Log entry for a listing_id, or null. */
+  function latestOutreach(listingId) {
+    var best = null;
+    state.outreach.forEach(function(o) {
+      if (String(o.listing_id) !== String(listingId)) return;
+      if (!best || String(o.updated_at||'') > String(best.updated_at||'')) best = o;
+    });
+    return best;
+  }
+
+  /** Coerce any date-ish value → yyyy-mm-dd for <input type="date">. */
+  function toDateInput(v) {
+    if (!v) return '';
+    var m = String(v).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+    return m ? m[1]+'-'+m[2]+'-'+m[3] : '';
+  }
+
+  // =====================================================================
+  //   TABS
+  // =====================================================================
+  function initTabs() {
+    $('#tabs').addEventListener('click', function(e) {
+      var btn = e.target.closest('.tab');
+      if (!btn) return;
+      var tab = btn.getAttribute('data-tab');
+      $all('.tab').forEach(function(t){ t.classList.toggle('is-active', t === btn); });
+      $all('.view').forEach(function(v){ v.classList.toggle('is-active', v.id === 'view-'+tab); });
+    });
+  }
+
+  // =====================================================================
+  //   BOOT
+  // =====================================================================
+  function boot() {
+    initTabs();
+    initDashboardButtons();
+    initSettingsForm();
+    initRecipientsForm();
+    initSavedSearchesForm();
+    initListingsFilters();
+    initModal();
+    initAdminButtons();
+    refreshAll();
+  }
+
+  function refreshAll() {
+    return call('getBootData').then(function(res) {
+      if (!res || !res.ok) {
+        var msg = (res && res.message) ? res.message : 'Failed to load data. Check the Apps Script execution log for details.';
+        toast(msg, 'error');
+        console.error('getBootData error:', msg);
+        return;
+      }
+      state.settings         = res.settings         || {};
+      state.listings         = res.listings         || [];
+      state.recipients       = res.recipients       || [];
+      state.outreach         = res.outreach         || [];
+      state.savedSearches    = res.savedSearches    || [];
+      state.errors           = res.errors           || [];
+      state.stats            = res.stats            || {};
+      state.outreachStatuses = res.outreachStatuses || state.outreachStatuses;
+      if (res.alertTimingOptions) state.alertTimingOptions = res.alertTimingOptions;
+      renderAll();
+    }).catch(function(err){ toast('Boot error: '+(err&&err.message?err.message:err),'error'); });
+  }
+
+  function renderAll() {
+    // Each section is isolated — a bug in one never blocks the others.
+    safeRender('Stats',         renderStats);
+    safeRender('Listings',      renderListings);
+    safeRender('Recipients',    renderRecipients);
+    safeRender('Settings',      renderSettings);
+    safeRender('SavedSearches', renderSavedSearches);
+    safeRender('Outreach',      renderOutreach);
+    safeRender('Errors',        renderErrors);
+    safeRender('Dropdowns',     populateDropdowns);
+  }
+
+  function safeRender(name, fn) {
+    try { fn(); }
+    catch (e) { console.error('Render error [' + name + ']:', e && e.message ? e.message : e); }
+  }
+
+  // =====================================================================
+  //   STATS & TOPBAR
+  // =====================================================================
+  function renderStats() {
+    var s = state.stats || {};
+
+    // Topbar pills
+    var sysPill = $('#topbar-system');
+    sysPill.textContent = s.system_enabled ? 'System On' : 'System Off';
+    sysPill.className   = 'pill ' + (s.system_enabled ? 'pill--ok' : 'pill--off');
+
+    var trigPill = $('#topbar-trigger');
+    trigPill.textContent = s.trigger_installed ? 'Trigger Active' : 'No Trigger';
+    trigPill.className   = 'pill ' + (s.trigger_installed ? 'pill--gold' : 'pill--neutral');
+
+    // Dashboard stat cards
+    setStatPill('#stat-system',    s.system_enabled ? 'Enabled' : 'Disabled', s.system_enabled ? 'pill--ok' : 'pill--off');
+    setStatPill('#stat-trigger',   s.trigger_installed ? 'Installed' : 'Not Installed', s.trigger_installed ? 'pill--gold' : 'pill--neutral');
+    $('#stat-total').textContent     = s.total_listings   || 0;
+    $('#stat-alerts').textContent    = s.alerts_sent      || 0;
+    $('#stat-today').textContent     = s.new_today        || 0;
+    $('#stat-recipients').textContent= s.active_recipients|| 0;
+    $('#stat-searches').textContent  = s.active_searches  || 0;
+    $('#stat-last-scan').textContent = s.last_scan_time   || '—';
+
+    // Admin page trigger pill
+    var adminPill = $('#admin-trigger-pill');
+    if (adminPill) {
+      adminPill.textContent = s.trigger_installed ? '● Installed' : '○ Not Installed';
+      adminPill.className   = 'pill ' + (s.trigger_installed ? 'pill--ok' : 'pill--neutral');
+    }
+
+    // Last error card
+    var errCard = $('#last-error-card');
+    if (s.last_error) {
+      errCard.hidden = false;
+      $('#last-error-body').textContent = (s.last_error.timestamp||'') + ' · ' + (s.last_error.function||'') + ': ' + (s.last_error.message||'');
+    } else {
+      errCard.hidden = true;
+    }
+  }
+
+  function setStatPill(sel, text, cls) {
+    var el = $(sel);
+    if (!el) return;
+    el.innerHTML = '';
+    var p = document.createElement('span');
+    p.className = 'pill ' + cls;
+    p.textContent = text;
+    el.appendChild(p);
+  }
+
+  // =====================================================================
+  //   DASHBOARD BUTTONS
+  // =====================================================================
+  function initDashboardButtons() {
+    $('#btn-run-scan').addEventListener('click', function(e) {
+      var btn = e.currentTarget;
+      setBusy(btn, true, 'Scanning listings…');
+      toast('Scanning listings…');
+      call('uiRunScanNow').then(function(res) {
+        setBusy(btn, false);
+        if (!res || res.ok === false) {
+          toast((res&&res.message)||'Scan failed','error');
+        } else if (res.new > 0) {
+          toast(res.new + ' new listing' + (res.new===1?'':'s') + ' found — ' + res.alerts + ' alert' + (res.alerts===1?'':'s') + ' sent','ok');
+        } else {
+          toast('Scan complete — no new listings','ok');
+        }
+        return refreshAll();
+      }).catch(function(err){ setBusy(btn,false); toast('Scan error: '+(err.message||err),'error'); });
+    });
+  }
+
+  // =====================================================================
+  //   ADMIN BUTTONS (Settings tab)
+  // =====================================================================
+  function initAdminButtons() {
+    $('#btn-install-trigger').addEventListener('click', function(e) {
+      var btn = e.currentTarget;
+      setBusy(btn, true, 'Installing…');
+      call('uiInstallTrigger').then(function(res) {
+        setBusy(btn, false);
+        if (res && res.ok) toast('Trigger installed','ok');
+        else toast((res&&res.message)||'Failed to install trigger','error');
+        return refreshAll();
+      }).catch(function(err){ setBusy(btn,false); toast(err.message,'error'); });
+    });
+
+    $('#btn-remove-trigger').addEventListener('click', function(e) {
+      var btn = e.currentTarget;
+      setBusy(btn, true, 'Removing…');
+      call('uiRemoveTrigger').then(function(res) {
+        setBusy(btn, false);
+        if (res && res.ok) toast('Trigger removed','ok');
+        else toast((res&&res.message)||'Failed to remove trigger','error');
+        return refreshAll();
+      }).catch(function(err){ setBusy(btn,false); toast(err.message,'error'); });
+    });
+
+    $('#btn-toggle-system').addEventListener('click', function(e) {
+      var btn = e.currentTarget;
+      setBusy(btn, true, 'Updating…');
+      call('uiToggleSystem').then(function(res) {
+        setBusy(btn, false);
+        if (res && res.ok) toast('System ' + (res.system_enabled ? 'enabled' : 'disabled'),'ok');
+        else toast((res&&res.message)||'Failed','error');
+        return refreshAll();
+      }).catch(function(err){ setBusy(btn,false); toast(err.message,'error'); });
+    });
+
+    $('#btn-setup-sheets').addEventListener('click', function(e) {
+      var btn = e.currentTarget;
+      setBusy(btn, true, 'Repairing…');
+      call('setupSheets').then(function(res) {
+        setBusy(btn, false);
+        if (res && res.ok) toast('Sheets ready','ok');
+        else toast((res&&res.message)||'Failed','error');
+        return refreshAll();
+      }).catch(function(err){ setBusy(btn,false); toast(err.message,'error'); });
+    });
+  }
+
+  // =====================================================================
+  //   SETTINGS
+  // =====================================================================
+  function initSettingsForm() {
+    $('#btn-save-settings').addEventListener('click', function(e) {
+      var btn = e.currentTarget;
+      setBusy(btn, true, 'Saving…');
+      call('uiSaveSettings', {
+        min_price:      $('#s-min-price').value,
+        max_price:      $('#s-max-price').value,
+        rows_per_scan:  $('#s-rows').value,
+        page:           $('#s-page').value,
+        namespace:      $('#s-namespace').value,
+        area:           $('#s-area').value,
+        neighborhood:   $('#s-neighborhood').value,
+        email_mode:     $('#s-email-mode').value,
+        system_enabled: $('#s-system-enabled').checked
+      }).then(function(res) {
+        setBusy(btn, false);
+        if (res && res.ok) toast('Settings saved','ok');
+        else toast((res&&res.message)||'Save failed','error');
+        return refreshAll();
+      }).catch(function(err){ setBusy(btn,false); toast(err.message,'error'); });
+    });
+  }
+
+  function renderSettings() {
+    var s = state.settings || {};
+    $('#s-min-price').value        = s.min_price      || '';
+    $('#s-max-price').value        = s.max_price      || '';
+    $('#s-rows').value             = s.rows_per_scan  || '';
+    $('#s-page').value             = s.page           || '';
+    $('#s-namespace').value        = s.namespace      || '';
+    $('#s-area').value             = s.area           || '';
+    $('#s-neighborhood').value = s.neighborhood || '';
+    var em = $('#s-email-mode');
+    if (em) em.value = s.email_mode || 'instant';
+    var sys = $('#s-system-enabled');
+    if (sys) sys.checked = String(s.system_enabled||'').toUpperCase() === 'TRUE';
+  }
+
+  function populateDropdowns() {
+    // Alert Delivery Timing select
+    var em = $('#s-email-mode');
+    if (em && !em.dataset.populated) {
+      em.dataset.populated = '1';
+      state.alertTimingOptions.forEach(function(o) {
+        em.appendChild(el('option',{value:o.value,text:o.label}));
+      });
+      em.value = state.settings.email_mode || 'instant';
+    }
+
+    // Saved Search timing
+    var sst = $('#ss-timing');
+    if (sst && !sst.dataset.populated) {
+      sst.dataset.populated = '1';
+      state.alertTimingOptions.forEach(function(o) {
+        sst.appendChild(el('option',{value:o.value,text:o.label}));
+      });
+    }
+
+    // Filter status dropdown
+    var fs = $('#f-listings-status');
+    if (fs) {
+      fs.innerHTML = '<option value="">All outreach statuses</option>';
+      state.outreachStatuses.forEach(function(s) {
+        fs.appendChild(el('option',{value:s,text:s}));
+      });
+    }
+
+    // Modal outreach status
+    var ms = $('#m-outreach-status');
+    if (ms) {
+      ms.innerHTML = '';
+      state.outreachStatuses.forEach(function(s) {
+        ms.appendChild(el('option',{value:s,text:s}));
+      });
+    }
+  }
+
+  // =====================================================================
+  //   RECIPIENTS
+  // =====================================================================
+  function initRecipientsForm() {
+    $('#btn-add-recipient').addEventListener('click', function(e) {
+      var btn = e.currentTarget;
+      var email = $('#r-email').value.trim();
+      if (!email) { toast('Email is required','error'); return; }
+      setBusy(btn, true, 'Adding…');
+      call('uiAddRecipient', {
+        name:        $('#r-name').value.trim(),
+        email:       email,
+        min_price:   $('#r-min-price').value.trim(),
+        area_filter:         $('#r-area').value.trim(),
+        neighborhood_filter: $('#r-neighborhood').value.trim(),
+        active:              $('#r-active').checked
+      }).then(function(res) {
+        setBusy(btn, false);
+        if (res && res.ok) {
+          toast('Recipient saved','ok');
+          $('#r-name').value=''; $('#r-email').value='';
+          $('#r-min-price').value=''; $('#r-area').value=''; $('#r-neighborhood').value='';
+          $('#r-active').checked=true;
+          return refreshAll();
+        }
+        toast((res&&res.message)||'Failed','error');
+      }).catch(function(err){ setBusy(btn,false); toast(err.message,'error'); });
+    });
+  }
+
+  function renderRecipients() {
+    var tbody = $('#recipients-table tbody');
+    tbody.innerHTML = '';
+    var isEmpty = state.recipients.length === 0;
+    $('#recipients-empty').hidden = !isEmpty;
+    $('#recipients-count').textContent = state.recipients.length + ' total';
+
+    state.recipients.forEach(function(r) {
+      var active = String(r.active||'').toUpperCase() === 'TRUE';
+      var tr = el('tr');
+
+      var nameIn  = mkInput('text',  r.name        || '', 'name');
+      var emailIn = mkInput('email', r.email       || '', 'email');
+      var priceIn = mkInput('number',r.min_price   || '', 'min_price');
+      var areaIn  = mkInput('text',  r.area_filter || '', 'area_filter');
+      var hoodIn  = mkInput('text',  r.neighborhood_filter || '', 'neighborhood_filter');
+      var chkWrap = el('label',{class:'check'});
+      var chk = el('input',{type:'checkbox','data-field':'active'});
+      chk.checked = active;
+      chkWrap.appendChild(chk);
+
+      tr.appendChild(tdEl(nameIn)); tr.appendChild(tdEl(emailIn));
+      tr.appendChild(tdEl(priceIn)); 
+      tr.appendChild(tdEl(areaIn));
+      tr.appendChild(tdEl(hoodIn));
+      tr.appendChild(tdEl(chkWrap));
+      tr.appendChild(tdEl(document.createTextNode(r.created_at||'')));
+
+      var saveBtn = el('button',{class:'btn btn--primary btn--sm',text:'Save'});
+      saveBtn.addEventListener('click', function() {
+        setBusy(saveBtn, true, 'Saving…');
+        call('uiUpdateRecipient', {
+          recipient_id: r.recipient_id,
+          name:         tr.querySelector('[data-field="name"]').value,
+          email:        tr.querySelector('[data-field="email"]').value,
+          min_price:    tr.querySelector('[data-field="min_price"]').value,
+          area_filter:         tr.querySelector('[data-field="area_filter"]').value,
+          neighborhood_filter: tr.querySelector('[data-field="neighborhood_filter"]').value,
+          active:              tr.querySelector('[data-field="active"]').checked
+        }).then(function(res) {
+          setBusy(saveBtn, false);
+          if (res && res.ok) { toast('Recipient saved','ok'); return refreshAll(); }
+          toast((res&&res.message)||'Failed','error');
+        }).catch(function(err){ setBusy(saveBtn,false); toast(err.message,'error'); });
+      });
+
+      var delBtn = el('button',{class:'btn btn--danger-ghost btn--sm',text:'Remove'});
+      delBtn.addEventListener('click', function() {
+        if (!confirm('Remove ' + (r.name||r.email) + '?')) return;
+        setBusy(delBtn, true, 'Removing…');
+        call('uiDeleteRecipient', r.recipient_id).then(function(res) {
+          setBusy(delBtn, false);
+          if (res && res.ok) { toast('Recipient removed','ok'); return refreshAll(); }
+          toast((res&&res.message)||'Failed','error');
+        }).catch(function(err){ setBusy(delBtn,false); toast(err.message,'error'); });
+      });
+
+      var acts = el('div',{class:'row-actions'});
+      acts.appendChild(saveBtn); acts.appendChild(delBtn);
+      tr.appendChild(tdEl(acts));
+      tbody.appendChild(tr);
+    });
+  }
+
+  function tdEl(child) { var t = el('td'); t.appendChild(child); return t; }
+  function mkInput(type, value, field) {
+    var i = el('input',{type:type,class:'input','data-field':field,style:'min-width:90px;'});
+    i.value = value==null?'':value; return i;
+  }
+
+  // =====================================================================
+  //   LISTINGS
+  // =====================================================================
+  function initListingsFilters() {
+    ['#f-listings-search','#f-listings-status','#f-listings-min-price','#f-listings-area','#f-listings-neighborhood']
+      .forEach(function(sel) {
+        $(sel).addEventListener('input', function() {
+          state.filters.search   = $('#f-listings-search').value.trim().toLowerCase();
+          state.filters.status   = $('#f-listings-status').value;
+          state.filters.minPrice = $('#f-listings-min-price').value;
+          state.filters.area     = $('#f-listings-area').value.trim().toLowerCase();
+          state.filters.neighborhood = $('#f-listings-neighborhood').value.trim().toLowerCase();
+          renderListings();
+        });
+      });
+  }
+
+  function renderListings() {
+    var grid = $('#listing-grid');
+    grid.innerHTML = '';
+    var f = state.filters;
+    var rows = state.listings.filter(function(l) {
+      if (f.search) {
+        var hay = [ l.address,l.area,l.neighborhood,l.title,l.source,l.source_namespace,
+            l.broker_name,l.broker_phone ].map(function(v){return String(v||'');}).join(' ').toLowerCase();
+        if (hay.indexOf(f.search) === -1) return false;
+      }
+      if (f.status && (l.outreach_status||'Not Started') !== f.status) return false;
+      if (f.minPrice && Number(l.price||0) < Number(f.minPrice)) return false;
+      if (f.area && String(l.area||'').toLowerCase().indexOf(f.area) === -1) return false;
+      if (f.neighborhood && String(l.neighborhood||'').toLowerCase().indexOf(f.neighborhood) === -1) return false;
+      return true;
+    });
+
+    var isEmpty = state.listings.length === 0;
+    $('#listing-empty').hidden = !isEmpty;
+    $('#listings-count').textContent = rows.length + ' shown / ' + state.listings.length + ' total';
+
+    rows.forEach(function(l) { grid.appendChild(buildListingCard(l)); });
+  }
+
+  function buildListingCard(l) {
+    if (!l) return el('div',{class:'listing-card'});
+    var card = el('div',{class:'listing-card'});
+
+    // Image
+    var imgDiv = el('div',{class:'listing-card__image'});
+    if (l.image_url) {
+      imgDiv.style.backgroundImage = "url('" + String(l.image_url).replace(/'/g,"\\'") + "')";
+      imgDiv.style.backgroundSize = 'cover';
+    }
+    var src = l.source_namespace || l.source;
+    if (src) imgDiv.appendChild(el('div',{class:'listing-card__image-label',text:src}));
+    card.appendChild(imgDiv);
+
+    // Body
+    var body = el('div',{class:'listing-card__body'});
+    body.appendChild(el('div',{class:'listing-card__price',text:fmtPrice(l.price)}));
+    if (l.title)   body.appendChild(el('div',{class:'listing-card__title',  text:esc(l.title)}));
+    if (l.address) body.appendChild(el('div',{class:'listing-card__address',text:esc(l.address)}));
+
+    // Broker info
+    if (l.broker_name)  body.appendChild(el('div',{class:'listing-card__broker',text:'👤 '+esc(l.broker_name)}));
+    if (l.broker_phone) {
+      var digits = String(l.broker_phone).replace(/\D/g,'');
+      var tel    = digits.length===10 ? '+1'+digits : '+'+digits;
+      var phoneA = el('a',{class:'listing-card__phone',href:'tel:'+tel,text:'📞 '+esc(l.broker_phone)});
+      body.appendChild(phoneA);
+    }
+
+     // Meta pills
+    var meta = el('div',{class:'listing-card__meta'});
+    if (l.area) {
+    meta.appendChild(el('span',{class:'pill pill--info',text:esc(l.area)}));
+    }
+    if (l.neighborhood) {
+    meta.appendChild(el('span',{class:'pill pill--gold',text:esc(l.neighborhood)}));
+    }
+    meta.appendChild(el('span',{class:'pill pill--neutral',
+    text:(Number(l.bedrooms)||0)+' bd · '+(Number(l.bathrooms)||0)+' ba'}));
+    var alertSent = String(l.alert_sent).toUpperCase() === 'TRUE';
+    meta.appendChild(el('span',{class:'pill '+(alertSent?'pill--ok':'pill--warn'),
+      text:alertSent?'Alert sent':'No alert'}));
+    var ostatus = l.outreach_status||'Not Started';
+    meta.appendChild(el('span',{class:'pill '+outreachPillClass(ostatus),text:ostatus}));
+    body.appendChild(meta);
+    card.appendChild(body);
+
+    // Footer
+    var footer = el('div',{class:'listing-card__footer'});
+    footer.appendChild(el('span',{class:'listing-card__time',
+      text:'Detected '+(l.detected_at||'—')}));
+
+    var acts = el('div',{class:'listing-card__actions'});
+    if (l.listing_url) {
+      acts.appendChild(el('a',{
+        class:'listing-card__link',href:l.listing_url,target:'_blank',rel:'noopener',text:'View →'
+      }));
+    }
+    var editBtn = el('button',{class:'btn btn--sm',text:'Update'});
+    editBtn.addEventListener('click', function(){ openModal(l); });
+    acts.appendChild(editBtn);
+    footer.appendChild(acts);
+    card.appendChild(footer);
+    return card;
+  }
+
+  function outreachPillClass(s) {
+    switch(s) {
+      case 'Won':              return 'pill--ok';
+      case 'Lost':             return 'pill--off';
+      case 'Contacted':        return 'pill--info';
+      case 'Pitch Created':    return 'pill--info';
+      case 'Follow-Up Needed': return 'pill--warn';
+      default:                 return 'pill--neutral';
+    }
+  }
+
+  // =====================================================================
+  //   SAVED SEARCHES
+  // =====================================================================
+  function initSavedSearchesForm() {
+    $('#btn-add-search').addEventListener('click', function(e) {
+      var btn = e.currentTarget;
+      var name = $('#ss-name').value.trim();
+      if (!name) { toast('Search name is required','error'); return; }
+      setBusy(btn, true, 'Saving…');
+      call('uiAddSavedSearch', {
+        search_name: name,
+        min_price:   $('#ss-min-price').value.trim(),
+        max_price:   $('#ss-max-price').value.trim(),
+        area:        $('#ss-area').value.trim(),
+        namespace:   $('#ss-namespace').value.trim(),
+        alert_timing:$('#ss-timing').value,
+        active:      $('#ss-active').checked
+      }).then(function(res) {
+        setBusy(btn, false);
+        if (res && res.ok) {
+          toast('Search saved','ok');
+          $('#ss-name').value=''; $('#ss-min-price').value='';
+          $('#ss-max-price').value=''; $('#ss-area').value='';
+          $('#ss-namespace').value='';
+          return refreshAll();
+        }
+        toast((res&&res.message)||'Failed','error');
+      }).catch(function(err){ setBusy(btn,false); toast(err.message,'error'); });
+    });
+  }
+
+  function renderSavedSearches() {
+    var tbody = $('#searches-table tbody');
+    tbody.innerHTML = '';
+    var isEmpty = state.savedSearches.length === 0;
+    $('#searches-empty').hidden = !isEmpty;
+    $('#searches-count').textContent = state.savedSearches.length + ' total';
+
+    state.savedSearches.forEach(function(s) {
+      var active = String(s.active||'').toUpperCase() === 'TRUE';
+      var tr = el('tr');
+      tr.appendChild(tdEl(document.createTextNode(s.search_name||'')));
+      tr.appendChild(tdEl(document.createTextNode(s.min_price ? fmtPrice(s.min_price) : '—')));
+      tr.appendChild(tdEl(document.createTextNode(s.max_price ? fmtPrice(s.max_price) : '—')));
+      tr.appendChild(tdEl(document.createTextNode(s.area||'—')));
+      tr.appendChild(tdEl(document.createTextNode(s.namespace||'—')));
+      tr.appendChild(tdEl(document.createTextNode(s.alert_timing||'instant')));
+      var pill = el('span',{class:'pill '+(active?'pill--ok':'pill--off'),text:active?'Active':'Off'});
+      tr.appendChild(tdEl(pill));
+      tr.appendChild(tdEl(document.createTextNode(s.created_at||'')));
+
+      var delBtn = el('button',{class:'btn btn--danger-ghost btn--sm',text:'Remove'});
+      delBtn.addEventListener('click', function() {
+        if (!confirm('Remove search "' + (s.search_name||'') + '"?')) return;
+        setBusy(delBtn, true, 'Removing…');
+        call('uiDeleteSavedSearch', s.search_id).then(function(res) {
+          setBusy(delBtn, false);
+          if (res && res.ok) { toast('Search removed','ok'); return refreshAll(); }
+          toast((res&&res.message)||'Failed','error');
+        }).catch(function(err){ setBusy(delBtn,false); toast(err.message,'error'); });
+      });
+      tr.appendChild(tdEl(delBtn));
+      tbody.appendChild(tr);
+    });
+  }
+
+  // =====================================================================
+  //   MODAL — pre-fills from Outreach_Log if exists
+  // =====================================================================
+  function initModal() {
+    $('#modal-close').addEventListener('click', closeModal);
+    $('#modal-cancel').addEventListener('click', closeModal);
+    $('#modal').addEventListener('click', function(e){ if (e.target.id==='modal') closeModal(); });
+    $('#modal-save').addEventListener('click', function(e) {
+      var btn = e.currentTarget;
+      var payload = {
+        listing_id:            $('#m-listing-id').value,
+        assigned_to:           $('#m-assigned-to').value,
+        outreach_status:       $('#m-outreach-status').value,
+        marketing_angle:       $('#m-marketing-angle').value,
+        marketing_plan_status: $('#m-plan-status').value,
+        follow_up_date:        $('#m-follow-up').value,
+        notes:                 $('#m-notes').value
+      };
+      setBusy(btn, true, 'Saving…');
+      call('uiUpdateListingOutreach', payload).then(function(res) {
+        setBusy(btn, false);
+        if (res && res.ok) { toast('Outreach updated','ok'); closeModal(); return refreshAll(); }
+        toast((res&&res.message)||'Failed','error');
+      }).catch(function(err){ setBusy(btn,false); toast(err.message,'error'); });
+    });
+  }
+
+  function openModal(l) {
+    // Pre-fill from most recent Outreach_Log entry so existing data is never lost
+    var existing = latestOutreach(l.listing_id);
+    $('#m-listing-id').value      = l.listing_id||'';
+    $('#m-assigned-to').value     = (existing&&existing.assigned_to)     || l.assigned_to     || '';
+    $('#m-outreach-status').value = (existing&&existing.outreach_status) || l.outreach_status || 'Not Started';
+    $('#m-marketing-angle').value = (existing&&existing.marketing_angle) || '';
+    $('#m-plan-status').value     = l.marketing_plan_status || '';
+    $('#m-follow-up').value       = toDateInput(existing && existing.follow_up_date);
+    $('#m-notes').value           = (existing&&existing.notes) || l.notes || '';
+    $('#modal').hidden = false;
+  }
+  function closeModal() { $('#modal').hidden = true; }
+
+  // =====================================================================
+  //   OUTREACH TAB
+  // =====================================================================
+  function renderOutreach() {
+    var tbody = $('#outreach-table tbody');
+    tbody.innerHTML = '';
+    var isEmpty = state.outreach.length === 0;
+    $('#outreach-empty').hidden = !isEmpty;
+    $('#outreach-count').textContent = state.outreach.length + ' rows';
+
+    var byListing = {};
+    state.listings.forEach(function(l){ byListing[l.listing_id] = l; });
+
+    var sorted = state.outreach.slice().sort(function(a,b){
+      return String(b.updated_at||'').localeCompare(String(a.updated_at||''));
+    });
+    sorted.forEach(function(o) {
+      var l = byListing[o.listing_id] || {};
+      var label = (l.address||l.title||o.listing_id||'—') + (l.price?' · '+fmtPrice(l.price):'');
+      var tr = el('tr');
+      tr.appendChild(tdEl(document.createTextNode(label)));
+      tr.appendChild(tdEl(document.createTextNode(o.assigned_to||'')));
+      var s = o.outreach_status||'Not Started';
+      tr.appendChild(tdEl(el('span',{class:'pill '+outreachPillClass(s),text:s})));
+      tr.appendChild(tdEl(document.createTextNode(o.marketing_angle||'')));
+      tr.appendChild(tdEl(document.createTextNode(o.follow_up_date||'')));
+      tr.appendChild(tdEl(document.createTextNode(o.updated_at||'')));
+      tr.appendChild(tdEl(document.createTextNode(o.notes||'')));
+      tbody.appendChild(tr);
+    });
+  }
+
+  // =====================================================================
+  //   ERRORS TAB
+  // =====================================================================
+  function renderErrors() {
+    var tbody = $('#errors-table tbody');
+    tbody.innerHTML = '';
+    var isEmpty = state.errors.length === 0;
+    $('#errors-empty').hidden = !isEmpty;
+    $('#errors-count').textContent = state.errors.length + ' entries';
+
+    state.errors.forEach(function(er) {
+      var tr = el('tr');
+      tr.appendChild(tdEl(document.createTextNode(er.timestamp||'')));
+      tr.appendChild(tdEl(document.createTextNode(er['function']||'')));
+      tr.appendChild(tdEl(document.createTextNode(er.message||'')));
+      var pre = el('pre');
+      pre.style.cssText = 'margin:0;white-space:pre-wrap;font-size:11px;color:#6c7689;max-width:300px;';
+      pre.textContent = String(er.details||'').slice(0,600);
+      tr.appendChild(tdEl(pre));
+      tbody.appendChild(tr);
+    });
+  }
+
+  // =====================================================================
+  //   START
+  // =====================================================================
+  document.addEventListener('DOMContentLoaded', boot);
+})();
+</script>
